@@ -10,6 +10,7 @@ npm install
 # create .env file and generate the application key
 cp .env.example .env
 php artisan key:generate
+php artisan migrate
 php artisan db:seed --class=UsersTableSeeder
 
 # build CSS and JS assets
