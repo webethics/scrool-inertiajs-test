@@ -1,12 +1,10 @@
 <?php
 
 use Illuminate\Support\Facades\Route;
-
-use Inertia\Inertia;
-use App\Models\User;
+use App\Http\Controllers\CustomerController;
 
 
-Route::get('/customers', function () {
-    $customers = User::orderBy('name')->get();
-    return Inertia::render('Customers', ['customers' => $customers]);
+Route::prefix('customers')->group(function () {
+    Route::get('/', [CustomerController::class, 'index']);
+    Route::get('/load-more', [CustomerController::class, 'getClientsByLetter']);
 });

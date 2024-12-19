@@ -1,186 +1,170 @@
 <template>
     <div class="customer-list-container">
         <!-- Alphabet Bar -->
-        <div class="alphabet-bar">
-            <button
+        <AlphabetBar
+            :alphabet="alphabet"
+            :active-letter="activeLetter"
+            @letter-click="handleLetterClick"
+        />
+
+        <!-- Customer List -->
+        <div class="customer-list" ref="customerList">
+            <!-- Loading Indicator -->
+            <LoadingIndicator v-if="isLoading" />
+
+            <!-- Customer Sections -->
+            <div
                 v-for="letter in alphabet"
                 :key="letter"
-                class="alphabet-button"
-                :class="{ 'active-letter': letter === activeLetter }"
-                @click="scrollToLetter(letter)"
-            >
-                {{ letter }}
-            </button>
-        </div>
-
-        <!-- Customer  List -->
-        <div class="customer-list" ref="customerList" @scroll="handleScroll">
-            <div
-                v-for="(customerGroup, letter) in visibleCustomers"
-                :key="letter"
-                :ref="(el) => setDynamicRef(el, letter)"
+                :ref="setSectionRef(letter)"
                 class="customer-section"
+                :class="{
+                    empty:
+                        !visibleCustomers[letter] ||
+                        visibleCustomers[letter].length === 0,
+                }"
             >
                 <h2>{{ letter }}</h2>
                 <ul>
-                    <li v-for="customer in customerGroup" :key="customer.id">
+                    <li
+                        v-for="customer in visibleCustomers[letter]"
+                        :key="customer.id"
+                    >
                         {{ customer.name }}
                     </li>
                 </ul>
-                <div v-if="!customerGroup.length" class="no-customers">
-                    No customer available for this letter.
-                </div>
             </div>
         </div>
     </div>
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from "vue";
+import { ref, reactive, onMounted, onBeforeUnmount, nextTick } from "vue";
+import axios from "axios";
+import AlphabetBar from "./../Components/AlphabetBar.vue";
+import LoadingIndicator from "./../Components/LoadingIndicator.vue";
 
-// Props
-const props = defineProps({
-    customers: {
-        type: Array,
-        required: true,
-    },
-});
-
-// Refs and reactive state
+// Reactive state
 const customerList = ref(null);
 const visibleCustomers = reactive({});
-const loading = reactive({});
-const currentPage = reactive({});
-const sectionRefs = ref({});
-const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
-const activeLetter = ref(null);
-const itemsPerPage = 20;
+const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split(""); // A-Z letters
+const isLoading = ref(false);
+const sectionRefs = reactive({});
+const letterPages = reactive({});
+const hasFetchedLetter = reactive({}); // Track if data is fetched for each letter
+const activeLetter = ref("A");
 
-// Initialize customer groups and page states
-const initializeCustomerGroups = () => {
-    alphabet.forEach((letter) => {
-        visibleCustomers[letter] = [];
-        currentPage[letter] = 0;
-        loading[letter] = false;
+// Group customers by their first letter
+const groupCustomersByLetter = (customers) => {
+    customers.forEach((customer) => {
+        const firstLetter = customer.name.charAt(0).toUpperCase();
+        if (!visibleCustomers[firstLetter]) {
+            visibleCustomers[firstLetter] = [];
+        }
+        visibleCustomers[firstLetter].push(customer);
     });
 };
 
-// Group customers by their starting letter
-const groupCustomersByLetter = () => {
-    const groupedCustomers = {};
-    alphabet.forEach((letter) => {
-        groupedCustomers[letter] = props.customers.filter(
-            (customer) => customer.name.charAt(0).toUpperCase() === letter
-        );
-    });
-    return groupedCustomers;
-};
+// Fetch customers for a specific letter
+const fetchCustomersForLetter = async (letter) => {
+    if (isLoading.value || hasFetchedLetter[letter]) return; // Prevent if already fetched
 
-// Load customers for a specific letter
-const loadCustomers = (letter) => {
-    if (loading[letter]) return;
-
-    loading[letter] = true;
-    const groupedCustomers = groupCustomersByLetter();
-    const startIndex = currentPage[letter] * itemsPerPage;
-    const customersForLetter = groupedCustomers[letter]?.slice(
-        startIndex,
-        startIndex + itemsPerPage
-    );
-
-    if (customersForLetter?.length) {
-        visibleCustomers[letter].push(...customersForLetter);
-        currentPage[letter]++;
+    if (!letterPages[letter]) {
+        letterPages[letter] = 1;
     }
-    loading[letter] = false;
+
+    isLoading.value = true;
+    hasFetchedLetter[letter] = true;
+
+    try {
+        const response = await axios.get(
+            `/customers/load-more?letter=${letter}`
+        );
+        if (response.data.length) {
+            groupCustomersByLetter(response.data);
+        } else {
+            hasFetchedLetter[letter] = true; // No data for this letter
+        }
+    } catch (error) {
+        console.error("Error fetching customers:", error);
+    } finally {
+        isLoading.value = false;
+    }
 };
 
-// Handle scroll events to load more customers when scrolling to the bottom
-const handleScroll = () => {
-    Object.entries(sectionRefs.value).forEach(([letter, section]) => {
-        if (isSectionScrolledToBottom(section)) {
-            loadCustomers(letter);
+// Handle the letter click
+const handleLetterClick = async (letter) => {
+    scrollToLetter(letter);
+
+    if (!visibleCustomers[letter] || visibleCustomers[letter].length === 0) {
+        await fetchCustomersForLetter(letter);
+    }
+};
+
+// Scroll to the corresponding letter section
+const scrollToLetter = (letter) => {
+    // Use nextTick to delay scroll until after DOM is updated
+    nextTick(() => {
+        const target = sectionRefs[letter];
+        if (target) {
+            target.scrollIntoView({
+                behavior: "auto", // Change to 'auto' for instant scroll
+                block: "start", // Align it to the top
+                inline: "nearest",
+            });
+
+            activeLetter.value = letter;
+        } else {
+            console.error("No target found for letter:", letter);
         }
     });
 };
 
-// Check if a section is scrolled to the bottom
-const isSectionScrolledToBottom = (section) =>
-    section &&
-    section.scrollHeight === section.scrollTop + section.clientHeight;
+// Setup intersection observer for each letter section
+const setupIntersectionObserver = (letter) => {
+    const observer = new IntersectionObserver(
+        async (entries) => {
+            for (const entry of entries) {
+                if (entry.isIntersecting && !hasFetchedLetter[letter]) {
+                    await fetchCustomersForLetter(letter);
+                }
+            }
+        },
+        { root: customerList.value, rootMargin: "0px", threshold: 0.5 } // 50% of the section in view
+    );
+    if (sectionRefs[letter]) {
+        observer.observe(sectionRefs[letter]);
+    }
+};
 
-// Scroll to the section of a specific letter
-const scrollToLetter = (letter) => {
-    const targetSection = sectionRefs.value[letter];
-    const listContainer = customerList.value;
+// Dynamically set ref for each letter section and observe it
+const setSectionRef = (letter) => {
+    return (el) => {
+        if (el) {
+            sectionRefs[letter] = el;
+            setupIntersectionObserver(letter);
+        }
+    };
+};
 
-    const offsetTop = targetSection.offsetTop;
-    const offsetHeight = targetSection.offsetHeight;
+// Initial load for 'A' or any other letter
+onMounted(async () => {
+    await fetchCustomersForLetter("A"); // Fetch for 'A' initially
+});
 
-    // Add some padding to make sure the content is well within view
-    const offset = 20; // Adjust this value based on your needs
-
-    // Scroll the container to the correct position
-    customerList.value.scrollTo({
-        top: offsetTop - offset, // Adjust with offset
-        behavior: "smooth",
+// Cleanup the observers when the component is destroyed
+onBeforeUnmount(() => {
+    Object.values(sectionRefs).forEach((el) => {
+        const observer = new IntersectionObserver();
+        observer.disconnect(); // Disconnect all observers
     });
-
-    if (!visibleCustomers[letter]?.length) {
-        loadCustomers(letter);
-    }
-    activeLetter.value = letter;
-};
-
-// Set a dynamic ref for each section (group of customers by letter)
-const setDynamicRef = (el, letter) => {
-    if (el) {
-        sectionRefs.value[letter] = el;
-    }
-};
-
-// Initialize customer data when the component mounts
-onMounted(() => {
-    initializeCustomerGroups();
-    activeLetter.value = "A";
-    alphabet.forEach((letter) => loadCustomers(letter));
 });
 </script>
 
 <style scoped>
-.customer-list-container {
-    display: flex;
-    flex-direction: row;
-    height: 100vh;
-}
-
-.alphabet-bar {
-    position: fixed;
-    right: 0;
-    top: 0;
-    width: 50px;
-    height: 100%;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    background-color: #f4f4f4;
-}
-
-.alphabet-button {
-    margin: 5px 0;
-    background: #fff;
-    border: 1px solid #ccc;
-    padding: 5px;
-    cursor: pointer;
-    font-size: 14px;
-}
-
 .customer-list {
-    flex: 1;
-    overflow-y: scroll;
-    padding-right: 60px;
-    height: 100vh;
+    overflow-y: auto;
+    height: 500px;
 }
 
 .customer-section {
@@ -193,15 +177,7 @@ onMounted(() => {
     margin-bottom: 10px;
 }
 
-.no-customers {
-    text-align: center;
-    padding: 1rem;
-    font-style: italic;
-}
-.active-letter {
-    background-color: #ff0000;
-    border-color: #ff0000;
-    color: #fff;
-    font-weight: 600;
+.empty {
+    display: block; /* Make sure the empty sections are still rendered and observed */
 }
 </style>
